@@ -1,0 +1,389 @@
+---
+title: "LDA_Gibbs_Sampling"
+author: "Tian (Simon) Yun"
+date: "1/24/2020"
+output: pdf_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE)
+```
+
+```{r, include = FALSE}
+library(RSQLite)
+library(MCMCpack)
+library(dplyr)
+library(tidytext)
+db <- dbConnect(dbDriver("SQLite"), "database.sqlite")
+```
+
+```{r}
+# Connect to database
+tables <- dbGetQuery(db, "SELECT Name FROM sqlite_master WHERE type='table'")
+colnames(tables) <- c("Name")
+tables <- tables %>%
+          rowwise() %>%
+          mutate(RowCount=dbGetQuery(db, paste0("SELECT COUNT(Id) RowCount FROM ", Name))$RowCount[1])
+```
+
+```{r}
+# Sampling from the database
+papers_sample <- dbGetQuery(db, "
+SELECT paper_text
+FROM papers
+WHERE year > 2015
+ORDER BY id DESC
+LIMIT 3")
+# papers_sample$paper_text <- paste0(substr(papers_sample$paper_text, 1, 500), "...")
+```
+
+```{r}
+generate_vocab <- function(W){
+  # To generate the vocabulary.
+  #
+  # Args:
+  #   W: The column "word" in W represents the words that have shown up in the papers.
+  #
+  # Returns:
+  #   The vocabulary (list) that includes all the unique words in the papers.
+  res = unique(W$word)
+  return(res)
+}
+
+
+get_num_words <- function(W, num_document){
+  # To get the number of words in each document.
+  #
+  # Args:
+  #   W: The column "documentID" in W represents the ID of each paper.
+  #   num_document: The number of documents.
+  # 
+  # Returns:
+  #   A list of number of words in each paper.
+  res = rep(0, num_document)
+  for (i in 1:num_document){
+    res[i] = table(W$documentID)[i]
+  }
+  return(res)
+}
+
+
+get_tokenized_data <- function(corpus, num_document){
+  # To get the tokenized data with columns "documentID" and "word", and to remove stop words.
+  #
+  # Args:
+  #   corpus: The corpus that includes the papers.
+  #   num_document: The number of documents.
+  # 
+  # Returns:
+  #   A tibble with columns "documentID" and "word".
+  data("stop_words")
+  # create the tibble with columns "documentID" and "text"
+  text_df <- tibble(documentID = 1:num_document, text = corpus[, 1])
+  # remove stop words
+  res <- text_df %>% 
+    unnest_tokens(word, text) %>%
+    anti_join(stop_words)
+  return(res)
+}
+
+
+init_z <- function(theta, N, num_document){
+  # To initialize z-matrix in LDA. This matrix has dimension of (number of documents) * (number of words in each document).
+  # (i, j) element in z-matrix represents the topic of j-th word in i-th document.
+  #
+  # Args:
+  #   theta: The theta-matrix in LDA.
+  #   N: The number of words in each document.
+  #   num_document: The number of documents.
+  # 
+  # Returns:
+  #   An initialized z-matrix.
+  res = c()
+  for(i in 1:num_document){
+    doc_size = N[i]
+    cur_doc <- rep(0, doc_size)
+    for(j in 1:doc_size){
+      temp = rmultinom(1, 1, theta[i,])
+      temp <- which.max(temp)
+      cur_doc[j] <- temp
+    }
+    res[[i]] <- cur_doc
+  }
+  return(res)
+}
+
+
+init_w <- function(W, N, vocabulary, num_document){
+  # To initialize w-matrix in LDA. This matrix has dimension of (number of documents) * (number of words in each document).
+  # (i, j) element in w-matrix represents the j-th word in i-th document. Each element is an index of the word in vocabulary.
+  #
+  # Args:
+  #   W: The tibble with tokenized words.
+  #   N: The number of words in each document.
+  #   vocabulary: The vocabulary.
+  #   num_document: The number of documents.
+  # 
+  # Returns:
+  #   An initialized w-matrix.
+  res = c()
+  start = 1
+  for(i in 1:num_document){
+    doc_size = N[i]
+    temp = rep(0, doc_size)
+    for(j in 1:doc_size){
+      # Find the index of this word in the vocabulary.
+      temp[j] = which(vocabulary == W$word[start])
+      start = start + 1
+    }
+    res[[i]] <- temp
+  }
+  return(res)
+}
+
+
+get_occurrence_of_word_in_topic <- function(z, w, N, num_document, num_topic, num_vocab){
+  # To generate a 2D-list list with the number of occurrences of words in each topic.
+  #
+  # Args:
+  #   z: The z-matrix.
+  #   w: The w-matrix.
+  #   N: The number of words in each document.
+  #   num_document: The number of documents.
+  #   num_topic: The number of topics.
+  #   num_vocab: The size of vocabulary.
+  # 
+  # Returns:
+  #   A 2D-list with the number of occurrences of words in each topic.
+  res <- rep(0, num_topic)
+  # Initialize empty num_document*num_word list
+  for(i in 1:num_topic){
+    res[i] <- list(rep(0, num_vocab))
+  }
+  # Start computing the occurrences of word in topic
+  for(i in 1:num_document){ 
+    doc_size = N[i]
+    for(j in 1:doc_size){
+      cur_word = w[[i]][j]
+      cur_topic = z[[i]][j]
+      res[[cur_topic]][cur_word] = res[[cur_topic]][cur_word] + 1
+    }
+  }
+  return(res)
+}
+
+
+draw_beta <- function(z, w, eta, N, num_document, num_topic, num_vocab){
+  # To re-draw the beta-matrix from new computed eta. This matrix has dimension of (number of topics) * (size of vocabulary).
+  # (i, j) element in beta-matrix represents the probability of occurrence of j-th word in i-th topic.
+  #
+  # Args:
+  #   z: The z-matrix.
+  #   w: The w-matrix.
+  #   eta: The hyperparameter eta.
+  #   N: The number of words in each document.
+  #   num_document: The number of documents.
+  #   num_topic: The number of topics.
+  #   num_vocab: The size of vocabulary.
+  # 
+  # Returns:
+  #   The re-sampled beta-matrix.
+  res <- rep(0, num_topic)
+  occur_word_in_topic = get_occurrence_of_word_in_topic(z, w, N, num_document, num_topic, num_vocab)
+  for(i in 1:num_topic){
+    # Computing new eta for each topic, and then compute new beta for each topic
+    new_eta = eta + occur_word_in_topic[[i]]
+    res[i] <- list(rdirichlet(1, new_eta)[1,])
+  }
+  return(res)
+}
+
+
+get_occurrence_of_topic_in_document <- function(z, num_document, num_topic){
+  # To generate a 2D-list list with the number of occurrences of topics in each document.
+  #
+  # Args:
+  #   z: The z-matrix.
+  #   num_document: The number of documents.
+  #   num_topic: The number of topics.
+  # 
+  # Returns:
+  #   A 2D-list list with the number of occurrences of topics in each document.
+  res <- rep(0, num_document)
+  # Initialize empty num_document*num_topic list
+  for(i in 1:num_document){
+    res[i] <- list(rep(0, num_topic))
+  }
+  # Start computing the occurrences of topic in document
+  for(i in 1:num_document){
+    temp = rep(0, num_topic)
+    temp_table = table(z[[i]])
+    for(j in 1:num_topic){
+      count = temp_table[as.character(j)]
+      if(is.na(count)){
+        temp[j] = 0
+      }
+      else{
+        temp[j] = count
+      }
+    }
+    res[[i]] <- temp
+  }
+  return(res)
+}
+
+
+draw_theta <- function(z, alpha, num_document, num_topic){
+  # To re-draw the theta-matrix from new computed alpha. This matrix has dimension of (number of documents) * (number of topics).
+  # (i, j) element in theta-matrix represents the probability of i-th document being classified as j-th topic.
+  #
+  # Args:
+  #   z: The z-matrix.
+  #   alpha: The hyperparameter alpha.
+  #   num_document: The number of documents.
+  #   num_topic: The number of topics.
+  # 
+  # Returns:
+  #   The re-sampled theta-matrix.
+  res <- rep(0, num_document) 
+  occur_topic_in_document = get_occurrence_of_topic_in_document(z, num_document, num_topic)
+  for(i in 1:num_document){
+    # Computing new alpha for each document, and then compute new theta for each document
+    new_alpha = alpha + occur_topic_in_document[[i]]
+    res[i] <- list(rdirichlet(1, new_alpha)[1,])
+  }
+  return(res)
+}
+
+
+draw_z <- function(theta, beta, w, N, num_document, num_topic){
+  # To re-draw the z-matrix from new computed alpha. This matrix has dimension of (number of documents) * (number of words in each document).
+  # (i, j) element in z-matrix represents the topic of j-th word in i-th document.
+  #
+  # Args:
+  #   theta: The theta-matrix.
+  #   beta: The beta-matrix.
+  #   w: The w-matrix.
+  #   N: The number of words in each document.
+  #   num_document: The number of documents.
+  #   num_topic: The number of topics.
+  # 
+  # Returns:
+  #   The re-sampled z-matrix.
+  res <- rep(0, num_document)
+  # Initialize empty num_document*num_word list
+  for(i in 1:num_document){
+    res[i] <- list(rep(0, N[i]))
+  }
+  # Start computing new z
+  for(i in 1:num_document){
+    doc_size = N[i]
+    for(j in 1:doc_size){
+      temp = rep(0, num_topic)
+      cur_word = w[[i]][j]
+      for(k in 1:num_topic){
+        prob_topic = theta[[i]][k]
+        prob_word = beta[[k]][cur_word]
+        temp[k] <- prob_topic * prob_word
+      }
+      res[[i]][j] = which.max(rmultinom(1, 1, temp))
+    }
+  }
+  return(res)
+}
+
+
+LDA <- function(corpus, K = 5, control = 1123, threshold = 1e-3, max_iteration = 1000, burn_in = 100){
+  # To implement LDA with Gibbs sampling method. 
+  #
+  # Args:
+  #   corpus: The corpus, which is a data.frame with one column. Each element is a document.
+  #   K: The number of latent topics.
+  #   control: This is the seed for pseudo-randomness.
+  #   Threshold: The converge threshold.
+  #   max_iteration: The maximum number of iterations of Gibbs sampling process.
+  #   burn_in: The number of burn-in iterations before the function starts tracking the values of parameters.
+  #   
+  # Returns:
+  #   res$beta: The final beta-matrix.
+  #   res$theta: The final theta-matrix.
+  #   res$theta_param_list: A list of values of the chosen theta-parameter to observe whether LDA has converged.
+  set.seed(control)
+  # initialize necessary variables
+  print("Start initializing...")
+  K = K
+  M = dim(corpus)[1]
+  W = get_tokenized_data(corpus, M)
+  N = get_num_words(W, M)
+  N_corpus = sum(N)
+  # generate vocabulary
+  vocabulary = generate_vocab(W)
+  V = length(vocabulary)
+  # initialize alpha and eta
+  alpha = list(rep(1, K))
+  alpha = unlist(alpha)
+  eta = list(rep(1, V))
+  eta = unlist(eta)
+  print("Done Initializing.")
+  # Start Gibbs sampling process
+  # The first iteration
+  print("Start burn in process...")
+  theta = rdirichlet(M, alpha)
+  z = init_z(theta, N, M)
+  beta = rdirichlet(K, eta)
+  w = init_w(W, N, vocabulary, M)
+  # The following iterations based on full conditional distribution
+  # Burn in for 500 iterations
+  for(i in 1:burn_in){
+    beta = draw_beta(z, w, eta, N, M, K, V)
+    theta = draw_theta(z, alpha, M, K)
+    z = draw_z(theta, beta, w, N, M, K)
+  }
+  print("Done burn in process.")
+  # Extract two parameters from beta and theta
+  #vocab_index = sample(1:V, 1)
+  topic_index = sample(1:K, 1)
+  doc_index = sample(1:M, 1)
+  #mat_theta1 = NULL
+  #mat_theta2 = NULL
+  #mat_theta3 = NULL
+  #mat_theta1 = rbind(mat_theta1, theta[[1]])
+  #mat_theta2 = rbind(mat_theta2, theta[[2]])
+  #mat_theta3 = rbind(mat_theta3, theta[[3]])
+  theta_param_prev = theta[[doc_index]][topic_index]
+  # Initialize the change in parameters, and variables for plot
+  theta_delta = 1
+  theta_param_list = rep(0, max_iteration)
+  # Keep iterating till convergence
+  print("Start looking for convergence...")
+  iteration_count = 0
+  #while( (beta_delta > threshold) && (theta_delta > threshold) || (iteration_count < max_iteration) ){
+  while(iteration_count < max_iteration){  
+    iteration_count = iteration_count + 1
+    beta = draw_beta(z, w, eta, N, M, K, V)
+    theta = draw_theta(z, alpha, M, K)
+    z = draw_z(theta, beta, w, N, M, K)
+    # Compute new delta's
+    theta_param_cur = theta[[doc_index]][topic_index]
+    theta_delta = abs(theta_param_cur - theta_param_prev)
+    theta_param_list[iteration_count] = theta_param_cur
+    # mat_theta1 = rbind(mat_theta1, theta[[1]])
+    # mat_theta2 = rbind(mat_theta2, theta[[2]])
+    # mat_theta3 = rbind(mat_theta3, theta[[3]])
+  }
+  print("Done looking for convergence.")
+  # Combine beta and theta and z
+  res <- list("beta" = matrix(unlist(beta), ncol = V), 
+              "theta" = matrix(unlist(theta), ncol = K),  
+              "theta_param_list" = theta_param_list)
+  #res <- list("doc1" = mat_theta1,
+  #            "doc2" = mat_theta2,
+  #            "doc3" = mat_theta3,
+  #            "beta" = beta)
+  return(res)
+}
+```
+
+```{r}
+res = LDA(papers_sample, max_iteration = 100, burn_in = 1)
+```
