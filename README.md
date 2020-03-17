@@ -10,10 +10,12 @@ LDA_Gibbs() is an easy-to-use function that can classify documents into latent t
 **LDA_Gibbs(** *corpus, K = 5, control = 1123, burn_in = 200, converge_iteration = 100, threshold = 5e-3, max_iteration = 1000, stop.words = NULL* **)**
 
 Implement LDA with Gibbs sampling process.
+
 Return a list containing beta data.frame, theta data.frame, and theta_param list.
 
 * **Parameters**
 	* **corpus: *corpus data.frame***
+		
 		A data frame with multiple rows and one column. Each row represents one document.
 	* **K: *None or int, optional***
 		The number of latent topics. If there is no input, then *K = 5* by default.
