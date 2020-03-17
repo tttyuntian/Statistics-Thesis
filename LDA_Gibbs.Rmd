@@ -14,27 +14,20 @@ library(RSQLite)
 library(MCMCpack)
 library(dplyr)
 library(tidytext)
-db <- dbConnect(dbDriver("SQLite"), "database.sqlite")
+library(tidyr)
 ```
 
 ```{r}
 # Connect to database
-tables <- dbGetQuery(db, "SELECT Name FROM sqlite_master WHERE type='table'")
-colnames(tables) <- c("Name")
-tables <- tables %>%
-          rowwise() %>%
-          mutate(RowCount=dbGetQuery(db, paste0("SELECT COUNT(Id) RowCount FROM ", Name))$RowCount[1])
-```
+db <- dbConnect(dbDriver("SQLite"), "database.sqlite")
 
-```{r}
 # Sampling from the database
 papers_sample <- dbGetQuery(db, "
 SELECT paper_text
 FROM papers
 WHERE year > 2015
 ORDER BY id DESC
-LIMIT 3")
-# papers_sample$paper_text <- paste0(substr(papers_sample$paper_text, 1, 500), "...")
+LIMIT 10")
 ```
 
 ```{r}
@@ -68,22 +61,42 @@ get_num_words <- function(W, num_document){
 }
 
 
-get_tokenized_data <- function(corpus, num_document){
+get_customize_stopwords <- function(stop.words = list()){
+  # To get the customized stop words list.
+  #
+  # Args:
+  #   stop.words: The to-be-appended stop words list.
+  # 
+  # Returns:
+  #   A list of stop words.
+  res = NULL
+  # Load default stop words
+  data("stop_words")
+  # Append new stop words
+  res <- bind_rows(tibble(word = stop.words,
+                          lexicon = c("custom")),
+                   stop_words)
+  return(res)
+}
+
+
+get_tokenized_data <- function(corpus, num_document, stop.words = list()){
   # To get the tokenized data with columns "documentID" and "word", and to remove stop words.
   #
   # Args:
   #   corpus: The corpus that includes the papers.
   #   num_document: The number of documents.
+  #   stop.words: The to-be-appended stop words list.
   # 
   # Returns:
   #   A tibble with columns "documentID" and "word".
-  data("stop_words")
+  custom_stop_words = get_customize_stopwords(stop.words)
   # create the tibble with columns "documentID" and "text"
   text_df <- tibble(documentID = 1:num_document, text = corpus[, 1])
   # remove stop words
   res <- text_df %>% 
     unnest_tokens(word, text) %>%
-    anti_join(stop_words)
+    anti_join(custom_stop_words)
   return(res)
 }
 
@@ -293,27 +306,29 @@ draw_z <- function(theta, beta, w, N, num_document, num_topic){
 }
 
 
-LDA <- function(corpus, K = 5, control = 1123, threshold = 1e-3, max_iteration = 1000, burn_in = 100){
-  # To implement LDA with Gibbs sampling method. 
+LDA_Gibbs <- function(corpus, K = 5, control = 1123, burn_in = 200, converge_iteration = 100, threshold = 5e-3, max_iteration = 1000, stop.words = NULL){
+  # To implement LDA with Gibbs sampling process. 
   #
   # Args:
   #   corpus: The corpus, which is a data.frame with one column. Each element is a document.
   #   K: The number of latent topics.
   #   control: This is the seed for pseudo-randomness.
-  #   Threshold: The converge threshold.
-  #   max_iteration: The maximum number of iterations of Gibbs sampling process.
   #   burn_in: The number of burn-in iterations before the function starts tracking the values of parameters.
+  #   converge_iteration: The number of iterations needed to ensure that the algorithm has converged.
+  #   Threshold: The converge threshold for increase/decrease rate of a theta parameter. 
+  #   max_iteration: The maximum number of iterations of Gibbs sampling process.
+  #   stop.words: The to-be-appended stop words list.
   #   
   # Returns:
-  #   res$beta: The final beta-matrix.
-  #   res$theta: The final theta-matrix.
-  #   res$theta_param_list: A list of values of the chosen theta-parameter to observe whether LDA has converged.
+  #   res$beta: A tidy table with  three columns, including *topic*, *word*, and *beta*.
+  #   res$theta: The final theta-matrix in tidy format.
+  #   res$theta_param: A list of theta parameters of a chosen document over iterations. 
   set.seed(control)
   # initialize necessary variables
   print("Start initializing...")
   K = K
   M = dim(corpus)[1]
-  W = get_tokenized_data(corpus, M)
+  W = get_tokenized_data(corpus, M, stop.words)
   N = get_num_words(W, M)
   N_corpus = sum(N)
   # generate vocabulary
@@ -333,7 +348,7 @@ LDA <- function(corpus, K = 5, control = 1123, threshold = 1e-3, max_iteration =
   beta = rdirichlet(K, eta)
   w = init_w(W, N, vocabulary, M)
   # The following iterations based on full conditional distribution
-  # Burn in for 500 iterations
+  # Pre-Burn-in for burn_in iterations
   for(i in 1:burn_in){
     beta = draw_beta(z, w, eta, N, M, K, V)
     theta = draw_theta(z, alpha, M, K)
@@ -341,49 +356,58 @@ LDA <- function(corpus, K = 5, control = 1123, threshold = 1e-3, max_iteration =
   }
   print("Done burn in process.")
   # Extract two parameters from beta and theta
-  #vocab_index = sample(1:V, 1)
   topic_index = sample(1:K, 1)
   doc_index = sample(1:M, 1)
-  #mat_theta1 = NULL
-  #mat_theta2 = NULL
-  #mat_theta3 = NULL
-  #mat_theta1 = rbind(mat_theta1, theta[[1]])
-  #mat_theta2 = rbind(mat_theta2, theta[[2]])
-  #mat_theta3 = rbind(mat_theta3, theta[[3]])
+  print(sprintf("Tracing Document #%d", doc_index))
+  theta_param = NULL
+  theta_param = rbind(theta_param, theta[[doc_index]])
   theta_param_prev = theta[[doc_index]][topic_index]
-  # Initialize the change in parameters, and variables for plot
-  theta_delta = 1
-  theta_param_list = rep(0, max_iteration)
+  # Initialize the change in parameters, and variables for burn-in plot
+  theta_delta = rep(1, K)
+  theta_delta_count = rep(0, K)
   # Keep iterating till convergence
   print("Start looking for convergence...")
-  iteration_count = 0
-  #while( (beta_delta > threshold) && (theta_delta > threshold) || (iteration_count < max_iteration) ){
-  while(iteration_count < max_iteration){  
+  iteration_count = 1
+  while (iteration_count < max_iteration) { 
+    if (any(theta_delta_count == converge_iteration)) {
+      print(sprintf("Convergence Found at Iteration %d.", iteration_count))
+      break
+    }
     iteration_count = iteration_count + 1
     beta = draw_beta(z, w, eta, N, M, K, V)
     theta = draw_theta(z, alpha, M, K)
     z = draw_z(theta, beta, w, N, M, K)
     # Compute new delta's
-    theta_param_cur = theta[[doc_index]][topic_index]
-    theta_delta = abs(theta_param_cur - theta_param_prev)
-    theta_param_list[iteration_count] = theta_param_cur
-    # mat_theta1 = rbind(mat_theta1, theta[[1]])
-    # mat_theta2 = rbind(mat_theta2, theta[[2]])
-    # mat_theta3 = rbind(mat_theta3, theta[[3]])
+    theta_param = rbind(theta_param, theta[[doc_index]])
+    theta_delta = abs((theta_param[iteration_count,] - theta_param[iteration_count - 1,]) / theta_param[iteration_count - 1,])
+    # Update theta_delta_count. First, if any parameter >= threshold, then set to 0. Second, if any parameter < threshold, then plus 1.
+    theta_delta_count = theta_delta_count * ((theta_delta < threshold) * 1)
+    theta_delta_count = theta_delta_count + ((theta_delta < threshold) * 1)
   }
   print("Done looking for convergence.")
-  # Combine beta and theta and z
-  res <- list("beta" = matrix(unlist(beta), ncol = V), 
-              "theta" = matrix(unlist(theta), ncol = K),  
-              "theta_param_list" = theta_param_list)
-  #res <- list("doc1" = mat_theta1,
-  #            "doc2" = mat_theta2,
-  #            "doc3" = mat_theta3,
-  #            "beta" = beta)
+  # Convert beta into tidy format
+  beta = data.frame(matrix(unlist(beta), byrow = TRUE, ncol = V))
+  colnames(beta) = vocabulary
+  beta <- beta %>%
+    mutate(topic = row_number()) %>%
+    gather(word, beta, -topic)
+  # Convert theta into tidy format
+  theta = data.frame(matrix(unlist(theta), byrow = TRUE, ncol = K))
+  colnames(theta) = as.character(1:K)
+  theta <- theta %>%
+    mutate(document = row_number()) %>%
+    gather(topic, theta, -document)
+  # Modify column names of theta_param 
+  theta_param = data.frame(theta_param)
+  colnames(theta_param) = paste("topic", 1:K, sep = "")
+  # Combine beta and theta
+  res <- list("beta" = beta, 
+              "theta" = theta,
+              "theta_param" = theta_param)
   return(res)
 }
 ```
 
 ```{r}
-res = LDA(papers_sample, max_iteration = 100, burn_in = 1)
+# Type your code here
 ```
