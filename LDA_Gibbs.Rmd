@@ -10,24 +10,10 @@ knitr::opts_chunk$set(echo = FALSE)
 ```
 
 ```{r, include = FALSE}
-library(RSQLite)
 library(MCMCpack)
 library(dplyr)
 library(tidytext)
 library(tidyr)
-```
-
-```{r}
-# Connect to database
-db <- dbConnect(dbDriver("SQLite"), "database.sqlite")
-
-# Sampling from the database
-papers_sample <- dbGetQuery(db, "
-SELECT paper_text
-FROM papers
-WHERE year > 2015
-ORDER BY id DESC
-LIMIT 10")
 ```
 
 ```{r}
