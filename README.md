@@ -74,7 +74,7 @@ Now, we have `papers_sample` as our corpus. Say we have the following list of st
     stop.words = c("0", "1", "2", "3", "4", "5", "6", "7", "8", "9", "model", "algorithm", "models", "learning")
     # Call LDA_Gibbs()
     res = LDA_Gibbs(papers_sample, K = 3, control = 1123, burn_in = 200, converge_iteration = 100, threshold = 5e-3, 
-    				max_iteration = 1000,  stop.words = stop.words)
+    		max_iteration = 1000,  stop.words = stop.words)
 
 LDA_Gibbs() will output its progress and whether it has found convergence as shown below.
 
@@ -135,28 +135,28 @@ This result means that *Document 1* is most likely to be classified as *Topic 3*
 
 The return will be:
 
-	topic	word	beta
-	<int>	<chr>	<dbl>
-	3	networks		0.006004027		
-	3	log			0.005935525		
-	3	clustering		0.004883109		
-	3	lds			0.004640842		
-	3	feedback		0.004304822		
-	3	matrix			0.004199121		
-	3	user			0.003755266		
-	3	node			0.003704164		
-	3	time			0.003648625		
-	3	data			0.003581415	
-	3	queries			0.003048854		
-	3	algorithms		0.003017439		
-	3	s0			0.002862436		
-	3	estimation		0.002773142		
-	3	al			0.002759629		
-	3	probability		0.002669478		
-	3	xt			0.002650911		
-	3	network			0.002613383		
-	3	graphon			0.002580034		
-	3	likelihood		0.002561868	
+	topic		word		beta
+	<int>		<chr>		<dbl>
+	3		networks	0.006004027		
+	3		log		0.005935525		
+	3		clustering	0.004883109		
+	3		lds		0.004640842		
+	3		feedback	0.004304822		
+	3		matrix		0.004199121		
+	3		user		0.003755266		
+	3		node		0.003704164		
+	3		time		0.003648625		
+	3		data		0.003581415	
+	3		queries		0.003048854		
+	3		algorithms		0.003017439		
+	3		s0		0.002862436		
+	3		estimation		0.002773142		
+	3		al		0.002759629		
+	3		probability	0.002669478		
+	3		xt		0.002650911		
+	3		network		0.002613383		
+	3		graphon		0.002580034		
+	3		likelihood		0.002561868	
 
 From these words, we can relate *Topic 3* to clustering, lds (i.e. Linear Dynamical System), and matrix. Let's peek at the first few lines of the abstract of *Document 1*, "Multi-view Matrix Factorization for Linear Dynamical System Estimation". 
 
