@@ -148,15 +148,15 @@ The return will be:
 	3		time		0.003648625		
 	3		data		0.003581415	
 	3		queries		0.003048854		
-	3		algorithms		0.003017439		
+	3		algorithms	0.003017439		
 	3		s0		0.002862436		
-	3		estimation		0.002773142		
+	3		estimation	0.002773142		
 	3		al		0.002759629		
 	3		probability	0.002669478		
 	3		xt		0.002650911		
 	3		network		0.002613383		
 	3		graphon		0.002580034		
-	3		likelihood		0.002561868	
+	3		likelihood	0.002561868	
 
 From these words, we can relate *Topic 3* to clustering, lds (i.e. Linear Dynamical System), and matrix. Let's peek at the first few lines of the abstract of *Document 1*, "Multi-view Matrix Factorization for Linear Dynamical System Estimation". 
 
